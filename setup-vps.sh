@@ -156,15 +156,230 @@ END
     chmod 600 ~/.my.cnf
 }
 
-function install_nginx {
-    check_install nginx nginx
+#function install_nginx {
+#    check_install nginx nginx
     
     # Need to increase the bucket size for Debian 5.
-    cat > /etc/nginx/conf.d/lowendbox.conf <<END
-server_names_hash_bucket_size 64;
+#    cat > /etc/nginx/conf.d/lowendbox.conf <<END
+#server_names_hash_bucket_size 64;
+#END
+
+#    invoke-rc.d nginx restart
+#}
+
+function install_nginx {
+    check_install nginx "nginx"
+
+    if [ ! -d /etc/nginx/ssl_keys ]; then
+        mkdir /etc/nginx/ssl_keys
+    fi
+    if [ ! -e /etc/nginx/ssl_keys/dhparam-1024.pem ]; then
+        openssl dhparam -out /etc/nginx/ssl_keys/dhparam-1024.pem 1024
+    fi
+
+# Create a ssl default ssl certificate.
+# This can be reused instead of creating a creating a self signed certificate.
+    if [ ! -e /etc/nginx/ssl_keys/default.pem ]; then
+	cat > /etc/nginx/ssl_keys/default.conf <<END
+[req]
+distinguished_name  = req_distinguished_name
+
+[ req_distinguished_name ]
+countryName         = Country Name (2 letter code)
+countryName_default     = XX
+countryName_min         = 2
+countryName_max         = 2
+
+commonName          = Common Name (eg, YOUR name)
+commonName_default  = Default CA
+commonName_max          = 64
+END
+	openssl genrsa -passout pass:password -des3 -out /etc/nginx/ssl_keys/default.key.secure 4096
+	openssl req -passin pass:password -new -x509 -key /etc/nginx/ssl_keys/default.key.secure -out /etc/nginx/ssl_keys/default.pem -days 3650 -config /etc/nginx/ssl_keys/default.conf -batch
+	openssl rsa -passin pass:password -in /etc/nginx/ssl_keys/default.key.secure -out /etc/nginx/ssl_keys/default.key
+
+	#openssl ecparam -out /etc/nginx/ssl_keys/default.ec.key -name secp521r1 -genkey
+	#openssl req -new -key /etc/nginx/ssl_keys/default.ec.key -x509 -nodes -days 3650 -out /etc/nginx/ssl_keys/default.ec.crt -config /etc/nginx/ssl_keys/default.ec.conf -batch
+    fi
+
+    cat > /etc/nginx/nginx.conf <<END
+user www-data;
+worker_processes $CPUCORES;
+pid /run/nginx.pid;
+
+events {
+	worker_connections 768;
+	# multi_accept on;
+}
+
+http {
+
+	##
+	# Basic Settings
+	##
+
+	sendfile on;
+	tcp_nopush on;
+	tcp_nodelay on;
+	keepalive_timeout 65;
+	types_hash_max_size 2048;
+	server_names_hash_bucket_size 64;
+	ignore_invalid_headers on;
+	log_format  main  '\$remote_addr \$host \$server_port \$remote_user [\$time_local] "\$request" '
+               '\$status \$body_bytes_sent "\$http_referer" "\$http_user_agent" "\$http_x_forwarded_for"';
+	upstream php {
+		server unix:/var/run/php5-fpm.sock;
+	}
+
+	# server_name_in_redirect off;
+
+	include mime.types;
+	default_type application/octet-stream;
+
+	##
+	# Logging Settings
+	##
+
+	access_log /var/log/nginx/access.log main;
+	error_log /var/log/nginx/error.log error;
+
+	##
+	# Gzip Settings
+	##
+
+	gzip on;
+	gzip_disable "msie6";
+	gzip_min_length 1400;
+	gzip_vary on;
+	gzip_proxied any;
+	gzip_comp_level 6;
+	gzip_buffers 16 8k;
+	gzip_http_version 1.1;
+	gzip_types text/plain text/css application/json application/x-javascript text/xml application/xml application/xml+rss text/javascript;
+
+	ssl_certificate ssl_keys/default.pem;
+	ssl_certificate_key ssl_keys/default.key;
+	ssl_dhparam ssl_keys/dhparam-1024.pem;
+	ssl_session_timeout 5m;
+	ssl_session_cache shared:SSL:10m;
+	ssl_protocols SSLv3 TLSv1 TLSv1.1 TLSv1.2;
+	ssl_ciphers ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-SHA256:ECDHE-RSA-AES256-SHA:DHE-RSA-AES256-SHA:DHE-RSA-CAMELLIA256-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:DHE-RSA-AES128-SHA:DHE-RSA-CAMELLIA128-SHA:HIGH:!aNULL;
+	ssl_prefer_server_ciphers on;
+
+	include /etc/nginx/conf.d/*.conf;
+	include /etc/nginx/sites-enabled/*;
+}
+
 END
 
+# Remove deprecated file
+    rm -f /etc/nginx/conf.d/lowendbox.conf
+
+# Make sure sites-available & sites enabled exist
+# Should only be needed when installing a cpu optimised nginx from my own repository.
+	if [ ! -d /etc/nginx/sites-available ]; then
+		mkdir /etc/nginx/sites-available
+	fi
+	if [ ! -d /etc/nginx/sites-enabled ]; then
+		mkdir /etc/nginx/sites-enabled
+	fi
+
+    cat > /etc/nginx/sites-available/default <<END
+server {
+END
+    if [ "$INTERFACE" = "all" ]; then
+        cat >> /etc/nginx/sites-available/default <<END
+    listen 80 default_server; ## listen for ipv4
+    listen 443 default_server ssl; ## listen for ipv4
+    listen [::]:80 default_server ipv6only=on; ## listen for ipv6
+    listen [::]:443 default_server ipv6only=on ssl; ## listen for ipv6
+END
+    else
+        if [ "$INTERFACE" = "ipv6" ]; then
+            cat >> /etc/nginx/sites-available/default <<END
+    listen [::]:80 default_server; ## listen for ipv6
+    listen [::]:443 default_server ipv6only=on ssl; ## listen for ipv6
+END
+        else
+            cat >> /etc/nginx/sites-available/default <<END
+    listen 80 default_server; ## listen for ipv4
+    listen 443 default_server ssl; ## listen for ipv4
+END
+        fi
+    fi
+    cat >> /etc/nginx/sites-available/default <<END
+    server_name  _;
+    access_log  /var/log/nginx/default.log main;
+    ssl_ciphers "ALL:!aNULL:!RC4";
+    return 444;
+}
+END
+	cat > /etc/nginx/standard.conf <<END
+location = /favicon.ico {
+	return 204;
+	log_not_found off;
+	access_log off;
+}
+
+location = /robots.txt {
+	log_not_found off;
+	access_log off;
+}
+
+# Make sure files with the following extensions do not get loaded by nginx because nginx would display the source code, and these files can contain PASSWORDS!
+location ~* \.(engine|inc|info|install|make|module|profile|test|po|sh|.*sql|theme|tpl(\.php)?|xtmpl)$|^(\..*|Entries.*|Repository|Root|Tag|Template)$|\.php_
+{
+	return 444;
+}
+
+# Deny all attempts to access hidden files such as .htaccess, .htpasswd, .DS_Store (Mac).
+location ~ /\. {
+	return 444;
+	access_log off;
+	log_not_found off;
+	}
+
+location ~*  \.(jpg|jpeg|png|gif|css|js|ico)$ {
+	expires max;
+	log_not_found off;
+}
+END
+    cat > /etc/nginx/nophp.conf <<END
+location ~* \.php\$ {
+	return 444;
+}
+END
+    cat > /etc/nginx/nocgi.conf <<END
+location ~* \\.(pl|cgi|py|sh|lua)\$ {
+	return 444;
+}
+END
+    cat > /etc/nginx/disallow.conf <<END
+location ~* (roundcube|webdav|smtp|http\\:|soap|w00tw00t) {
+	return 444;
+}
+if (\$http_user_agent ~* "(Morfeus|larbin|ZmEu|Toata|Huawei|talktalk)" ) {
+	return 444;
+}
+END
+#   delete deprecated file
+    rm -f /etc/nginx/disallow-agent.conf
+
     invoke-rc.d nginx restart
+    chown www-data:adm /var/log/nginx/*
+    sed -i "s/rotate 52/rotate 1/" /etc/logrotate.d/nginx
+}
+
+function install_nginx-upstream {
+    wget -O - http://nginx.org/keys/nginx_signing.key | apt-key add -
+    cat > /etc/apt/sources.list.d/nginx.list <<END
+deb http://nginx.org/packages/debian/ wheezy nginx
+#deb-src http://nginx.org/packages/debian/ wheezy nginx
+END
+    apt-get update
+    apt-get -y remove nginx nginx-full nginx-common
+    apt-get install nginx
+    sed -i "s/rotate 52/rotate 1/" /etc/logrotate.d/nginx
 }
 
 function install_php {
@@ -343,6 +558,60 @@ END
     invoke-rc.d nginx reload
 }
 
+function install_php {
+    check_install php5-fpm "php5-fpm php5-cli php5-mysqlnd php5-cgi php5-gd php5-curl php-apc"
+    if [ "$SERVER" = "nginx" ]; then
+	cat > /etc/nginx/fastcgi_php <<END
+location ~ \.php$ {
+	include /etc/nginx/fastcgi_params;
+	fastcgi_index index.php;
+	fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+	if (-f \$request_filename) {
+		fastcgi_pass php;
+	}
+}
+END
+fi
+    sed -i "/pm =/cpm = ondemand" /etc/php5/fpm/pool.d/www.conf
+    if [ "$MEMORY" = "low" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 1" /etc/php5/fpm/pool.d/www.conf
+	elif [ "$MEMORY" = "64" ]; then
+		sed -i "/pm.max_children =/cpm.max_children = 2" /etc/php5/fpm/pool.d/www.conf
+	elif [ "$MEMORY" = "96" ]; then
+       	sed -i "/pm.max_children =/cpm.max_children = 3" /etc/php5/fpm/pool.d/www.conf
+    elif [ "$MEMORY" = "128" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 4" /etc/php5/fpm/pool.d/www.conf
+    elif [ "$MEMORY" = "192" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 6" /etc/php5/fpm/pool.d/www.conf
+    elif [ "$MEMORY" = "256" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 8" /etc/php5/fpm/pool.d/www.conf
+    elif [ "$MEMORY" = "384" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 12" /etc/php5/fpm/pool.d/www.conf
+    elif [ "$MEMORY" = "512" ]; then
+        sed -i "/pm.max_children =/cpm.max_children = 16" /etc/php5/fpm/pool.d/www.conf
+    fi
+    sed -i "/pm.max_requests =/cpm.max_requests = 500" /etc/php5/fpm/pool.d/www.conf
+    sed -i "/pm.status_path =/cpm.status_path = \/status" /etc/php5/fpm/pool.d/www.conf
+    sed -i "/listen =/clisten = /var/run/php5-fpm.sock" /etc/php5/fpm/pool.d/www.conf
+    sed -i "/listen.owner =/clisten.owner = www-data" /etc/php5/fpm/pool.d/www.conf
+    sed -i "/listen.group =/clisten.group = www-data" /etc/php5/fpm/pool.d/www.conf
+    sed -i "/listen.mode =/clisten.mode = 0666" /etc/php5/fpm/pool.d/www.conf
+	cat > /etc/php5/conf.d/lowendscript.ini <<END
+apc.enable_cli = 1
+apc.mmap_file_mask=/tmp/apc.XXXXXX
+date.timezone = `cat /etc/timezone`
+END
+    service php5-fpm restart
+    if [ "$SERVER" = "nginx" ]; then
+	if [ -f /etc/init.d/php-cgi ];then
+            service php-cgi stop
+            update-rc.d php-cgi remove
+            rm /etc/init.d/php-cgi
+            service nginx restart
+            print_info "/etc/init.d/php-cgi removed"
+	fi
+    fi
+}
 function print_info {
     echo -n -e '\e[1;36m'
     echo -n $1
