@@ -163,7 +163,7 @@ function install_nginx {
     cat > /etc/nginx/conf.d/lowendbox.conf <<END
 server_names_hash_bucket_size 64;
 END
-
+    mkdir /var/www
     invoke-rc.d nginx restart
 }
 
