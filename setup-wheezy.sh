@@ -168,7 +168,7 @@ END
 }
 
 function install_php {
-    check_install php5-fpm php5-mysql php5-gd php5-curl   
+    check_install php5-fpm php5-fpm php5-mysql php5-gd php5-curl   
 }
 
 function install_syslogd {
